@@ -1,0 +1,27 @@
+-- database/init.sql
+
+-- 1. STACK TABLE (LIFO via ID order)
+CREATE TABLE IF NOT EXISTS stack (
+    id SERIAL PRIMARY KEY,
+    value INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. LINKED LIST TABLE (Ordered List)
+CREATE TABLE IF NOT EXISTS linked_list (
+    id SERIAL PRIMARY KEY,
+    value TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 3. GRAPH TABLES (Nodes and Edges)
+CREATE TABLE IF NOT EXISTS nodes (
+    label VARCHAR(255) PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS edges (
+    id SERIAL PRIMARY KEY,
+    source VARCHAR(255) REFERENCES nodes(label) ON DELETE CASCADE,
+    target VARCHAR(255) REFERENCES nodes(label) ON DELETE CASCADE,
+    CONSTRAINT unique_edge UNIQUE (source, target)
+);

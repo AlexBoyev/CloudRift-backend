@@ -1,0 +1,10 @@
+{
+  "project_name": "aks_data_structures",
+  "minikube_profile": "minikube",
+  "ingress": {
+    "local_port": 8090,
+    "container_port": 80,
+    "namespace": "ingress-nginx",
+    "service_name": "ingress-nginx-controller"
+  }
+}
