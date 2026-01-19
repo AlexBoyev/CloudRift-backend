@@ -1,7 +1,6 @@
 # ----------------------------------------
 # Stage 1: Build (Compiling)
 # ----------------------------------------
-# We keep this EXACTLY as you had it
 FROM gcc:12 AS builder
 
 WORKDIR /app
@@ -9,10 +8,12 @@ WORKDIR /app
 # 1. Install PostgreSQL development libraries
 RUN apt-get update && apt-get install -y libpq-dev
 
-# 2. Copy the specific 'stack' directory
+# 2. FIX: Copy the specific 'stack' directory from the root context
 COPY stack/ /app/stack/
 
-# 3. Compile the C code
+# 3. FIX: Compile using full paths
+#    - We point gcc to the files inside /app/stack/
+#    - We add -I/app/stack so it can find header files in that folder
 RUN gcc -O2 -Wall -Wextra -o stack-service \
     /app/stack/stack_server.c \
     /app/stack/db_client.c \
@@ -21,31 +22,18 @@ RUN gcc -O2 -Wall -Wextra -o stack-service \
     -lpq
 
 # ----------------------------------------
-# Stage 2: Run (Hybrid Runtime: C + Python)
+# Stage 2: Run (Runtime)
 # ----------------------------------------
-# CHANGE: Use a Python base image (which is built on Debian)
-FROM python:3.9-slim
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# 1. Install PostgreSQL runtime library (Required for your C binary)
-#    We also perform clean up to keep image small
+# 1. Install PostgreSQL runtime library
 RUN apt-get update && apt-get install -y libpq5 && rm -rf /var/lib/apt/lists/*
 
-# 2. Install Python Dependencies (For Monitoring)
-COPY stack/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 3. Copy the compiled C binary from Stage 1
+# 2. Copy the compiled binary from builder
 COPY --from=builder /app/stack-service .
+
+# 3. Permissions and Command
 RUN chmod +x stack-service
-
-# 4. Copy the Python Wrapper (The bridge to Prometheus)
-COPY stack/app.py .
-
-# 5. Expose the port (Python Wrapper usually runs on 5001)
-EXPOSE 5001
-
-# 6. CHANGE CMD: Run the Python Wrapper, not the C binary directly
-#    (The Python script will call the C binary when needed)
-CMD ["python", "app.py"]
+CMD ["./stack-service"]

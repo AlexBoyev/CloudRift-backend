@@ -8,8 +8,7 @@
 #include <libpq-fe.h>
 #include "db_client.h"
 
-// --- CHANGE 1: Set Default Port to 5050 (Internal) ---
-#define DEFAULT_PORT 5050
+#define PORT 80
 #define BUFFER_SIZE 65536
 
 static void send_response(int sock, int status, const char *body) {
@@ -41,6 +40,7 @@ static void send_response(int sock, int status, const char *body) {
 }
 
 static int parse_request_line(const char *req, char *method, size_t msz, char *path, size_t psz) {
+    // Expect: METHOD SP PATH SP HTTP/...
     const char *sp1 = strchr(req, ' ');
     if (!sp1) return 0;
     const char *sp2 = strchr(sp1 + 1, ' ');
@@ -61,6 +61,7 @@ static int parse_request_line(const char *req, char *method, size_t msz, char *p
 }
 
 static int header_content_length(const char *headers) {
+    // simple case-insensitive search for "Content-Length:"
     const char *p = headers;
     while (*p) {
         if ((p[0] == 'C' || p[0] == 'c') &&
@@ -91,6 +92,8 @@ static int header_content_length(const char *headers) {
 }
 
 static int extract_json_int_value(const char *json, const char *key, int *out) {
+    // Look for: "key" : <int>
+    // tolerant to spaces
     char needle[64];
     snprintf(needle, sizeof(needle), "\"%s\"", key);
 
@@ -103,6 +106,7 @@ static int extract_json_int_value(const char *json, const char *key, int *out) {
     p++;
     while (*p && isspace((unsigned char)*p)) p++;
 
+    // optional sign
     int sign = 1;
     if (*p == '-') { sign = -1; p++; }
 
@@ -118,13 +122,16 @@ static int extract_json_int_value(const char *json, const char *key, int *out) {
 }
 
 static int read_full_http_request(int sock, char *out_buf, size_t out_sz) {
+    // Read until headers complete, then read body based on Content-Length.
     size_t total = 0;
+
     while (total < out_sz - 1) {
         ssize_t n = read(sock, out_buf + total, out_sz - 1 - total);
         if (n <= 0) break;
         total += (size_t)n;
         out_buf[total] = '\0';
 
+        // stop when we have headers and body (if any)
         char *hdr_end = strstr(out_buf, "\r\n\r\n");
         if (hdr_end) {
             size_t header_len = (size_t)(hdr_end - out_buf) + 4;
@@ -152,28 +159,34 @@ static void handle_client(int client_sock) {
         return;
     }
 
+    // CORS preflight
     if (strcmp(method, "OPTIONS") == 0) {
         send_response(client_sock, 200, "{\"status\":\"ok\"}");
         return;
     }
 
+    // Locate body (if present)
     char *hdr_end = strstr(req, "\r\n\r\n");
     const char *body = (hdr_end) ? (hdr_end + 4) : "";
 
+    // Health
     if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0) {
         send_response(client_sock, 200, "{\"status\":\"ok\"}");
         return;
     }
 
+    // Open a DB connection per request (simple + reliable under replicas).
     PGconn *conn = get_db_connection();
     if (!conn) {
         send_response(client_sock, 500, "{\"error\":\"DB connection failed\"}");
         return;
     }
 
+    // Ensure table exists
     PGresult *r0 = PQexec(conn, "CREATE TABLE IF NOT EXISTS stack (id SERIAL PRIMARY KEY, value INT NOT NULL);");
     PQclear(r0);
 
+    // POST /push
     if (strcmp(method, "POST") == 0 && strcmp(path, "/push") == 0) {
         int val = 0;
         if (!extract_json_int_value(body, "value", &val)) {
@@ -196,7 +209,10 @@ static void handle_client(int client_sock) {
             const char *err = PQerrorMessage(conn);
             PQclear(res);
             PQfinish(conn);
-            send_response(client_sock, 500, "{\"error\":\"DB insert failed\"}");
+
+            char msg[512];
+            snprintf(msg, sizeof(msg), "{\"error\":\"DB insert failed\",\"details\":\"%s\"}", err ? err : "unknown");
+            send_response(client_sock, 500, msg);
             return;
         }
 
@@ -206,9 +222,12 @@ static void handle_client(int client_sock) {
         return;
     }
 
+    // POST /pop
     if (strcmp(method, "POST") == 0 && strcmp(path, "/pop") == 0) {
         PGresult *res = PQexec(conn,
-            "DELETE FROM stack WHERE id = (SELECT id FROM stack ORDER BY id DESC LIMIT 1) RETURNING value"
+            "DELETE FROM stack "
+            "WHERE id = (SELECT id FROM stack ORDER BY id DESC LIMIT 1) "
+            "RETURNING value"
         );
 
         if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
@@ -221,22 +240,29 @@ static void handle_client(int client_sock) {
             return;
         }
 
+        // empty stack or unexpected
         PQclear(res);
         PQfinish(conn);
         send_response(client_sock, 200, "{\"status\":\"stack empty\"}");
         return;
     }
 
+    // GET /stack
     if (strcmp(method, "GET") == 0 && strcmp(path, "/stack") == 0) {
         PGresult *res = PQexec(conn, "SELECT value FROM stack ORDER BY id DESC");
 
         if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+            const char *err = PQerrorMessage(conn);
             PQclear(res);
             PQfinish(conn);
-            send_response(client_sock, 500, "{\"error\":\"DB select failed\"}");
+
+            char msg[512];
+            snprintf(msg, sizeof(msg), "{\"error\":\"DB select failed\",\"details\":\"%s\"}", err ? err : "unknown");
+            send_response(client_sock, 500, msg);
             return;
         }
 
+        // Return JSON array: [top, ..., bottom]
         char out[BUFFER_SIZE];
         size_t used = 0;
         used += snprintf(out + used, sizeof(out) - used, "[");
@@ -245,7 +271,10 @@ static void handle_client(int client_sock) {
         for (int i = 0; i < rows; i++) {
             const char *v = PQgetvalue(res, i, 0);
             if (!v) v = "0";
+
+            // keep buffer safe
             if (used + strlen(v) + 4 >= sizeof(out)) break;
+
             used += snprintf(out + used, sizeof(out) - used, "%s%s", v, (i < rows - 1) ? "," : "");
         }
         used += snprintf(out + used, sizeof(out) - used, "]");
@@ -270,18 +299,11 @@ int main() {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    // --- CHANGE 2: Read Port from Environment Variable ---
-    int port = DEFAULT_PORT;
-    char *env_port = getenv("PORT");
-    if (env_port) {
-        port = atoi(env_port);
-    }
-
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(PORT);
 
     if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("bind");
@@ -295,11 +317,12 @@ int main() {
         return 1;
     }
 
-    printf("C Stack Service: Ready on Port %d\n", port);
+    printf("C Stack Service: Ready on Port %d\n", PORT);
 
     while (1) {
         int client = accept(server_fd, NULL, NULL);
         if (client < 0) continue;
+
         handle_client(client);
         close(client);
     }
