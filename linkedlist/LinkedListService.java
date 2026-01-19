@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.sql.Connection;
@@ -13,34 +14,59 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.nio.charset.StandardCharsets;
 
+// --- PROMETHEUS IMPORTS ---
+import io.prometheus.client.CollectorRegistry;
+import io.prometheus.client.exporter.common.TextFormat;
+import io.prometheus.client.hotspot.DefaultExports;
+
 public class LinkedListService {
 
     public static void main(String[] args) throws IOException {
+        // 1. Initialize Default Metrics (CPU, Memory, Garbage Collection)
+        DefaultExports.initialize();
+
         // Create HTTP Server on Port 8080
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
 
         // --- Define Routes ---
-        server.createContext("/list", new ListHandler());           // GET: Returns list
-        server.createContext("/add", new AddHandler());             // POST: Adds to tail
-        server.createContext("/delete", new RemoveTailHandler());   // POST: Removes tail
-        server.createContext("/remove-head", new RemoveHeadHandler()); // POST: Removes head
-        server.createContext("/health", new HealthHandler());       // GET: Health Check
+        server.createContext("/list", new ListHandler());
+        server.createContext("/add", new AddHandler());
+        server.createContext("/delete", new RemoveTailHandler());
+        server.createContext("/remove-head", new RemoveHeadHandler());
+        server.createContext("/health", new HealthHandler());
+
+        // 2. Add Metrics Endpoint
+        server.createContext("/metrics", new MetricsHandler());
 
         server.setExecutor(null);
         System.out.println("Java LinkedList Service running on port 8080");
         server.start();
     }
 
-    // --- GET /list : Returns all items ---
+    // --- PROMETHEUS HANDLER ---
+    static class MetricsHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange t) throws IOException {
+            // Tell Grafana this is text format 004
+            t.getResponseHeaders().set("Content-Type", TextFormat.CONTENT_TYPE_004);
+            t.sendResponseHeaders(200, 0);
+
+            // Write the metrics from the registry to the response
+            try (OutputStreamWriter writer = new OutputStreamWriter(t.getResponseBody())) {
+                TextFormat.write004(writer, CollectorRegistry.defaultRegistry.metricFamilySamples());
+            }
+        }
+    }
+
+    // --- EXISTING HANDLERS BELOW (Keep them exactly as they were) ---
+
     static class ListHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
             StringBuilder json = new StringBuilder("[");
-
             try (Connection conn = DBHelper.getConnection();
                  Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery("SELECT value FROM linked_list ORDER BY id ASC")) {
-
                 boolean first = true;
                 while (rs.next()) {
                     if (!first) json.append(",");
@@ -51,22 +77,17 @@ public class LinkedListService {
                 e.printStackTrace();
             }
             json.append("]");
-
             sendResponse(t, 200, json.toString());
         }
     }
 
-    // --- POST /add : Adds an item ---
     static class AddHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if ("POST".equals(t.getRequestMethod())) {
                 InputStream is = t.getRequestBody();
                 String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-
-                // Simple Parse: Expecting raw string or {"value": "X"}
                 String value = body.replace("{\"value\":\"", "").replace("\"}", "").replace("\"", "").trim();
-
                 try (Connection conn = DBHelper.getConnection();
                      PreparedStatement pstmt = conn.prepareStatement("INSERT INTO linked_list (value) VALUES (?)")) {
                     pstmt.setString(1, value);
@@ -82,22 +103,17 @@ public class LinkedListService {
         }
     }
 
-    // --- POST /delete : Removes the Tail (Last Item) ---
     static class RemoveTailHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if ("POST".equals(t.getRequestMethod())) {
                 try (Connection conn = DBHelper.getConnection();
                      Statement stmt = conn.createStatement()) {
-
-                    // Logic: Delete the row with the HIGHEST ID
                     String sql = "DELETE FROM linked_list WHERE id = (SELECT id FROM linked_list ORDER BY id DESC LIMIT 1)";
                     int rowsAffected = stmt.executeUpdate(sql);
-
                     if (rowsAffected > 0) {
                         sendResponse(t, 200, "{\"status\": \"removed tail\"}");
                     } else {
-                        // Table is empty
                         sendResponse(t, 200, "{\"status\": \"list empty\"}");
                     }
                 } catch (Exception e) {
@@ -110,18 +126,14 @@ public class LinkedListService {
         }
     }
 
-    // --- POST /remove-head : Removes the Head (First Item) ---
     static class RemoveHeadHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if ("POST".equals(t.getRequestMethod())) {
                 try (Connection conn = DBHelper.getConnection();
                      Statement stmt = conn.createStatement()) {
-
-                    // Logic: Delete the row with the LOWEST ID
                     String sql = "DELETE FROM linked_list WHERE id = (SELECT id FROM linked_list ORDER BY id ASC LIMIT 1)";
                     int rowsAffected = stmt.executeUpdate(sql);
-
                     if (rowsAffected > 0) {
                         sendResponse(t, 200, "{\"status\": \"removed head\"}");
                     } else {
