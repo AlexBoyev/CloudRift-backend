@@ -8,7 +8,8 @@
 #include <libpq-fe.h>
 #include "db_client.h"
 
-#define PORT 80
+// --- CHANGE 1: Set Default Port to 5050 (Internal) ---
+#define DEFAULT_PORT 5050
 #define BUFFER_SIZE 65536
 
 static void send_response(int sock, int status, const char *body) {
@@ -299,11 +300,18 @@ int main() {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
+    // --- CHANGE 2: Read Port from Environment Variable (Sent by app.py) ---
+    int port = DEFAULT_PORT;
+    char *env_port = getenv("PORT");
+    if (env_port) {
+        port = atoi(env_port);
+    }
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons(port);
 
     if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("bind");
@@ -317,7 +325,7 @@ int main() {
         return 1;
     }
 
-    printf("C Stack Service: Ready on Port %d\n", PORT);
+    printf("C Stack Service: Ready on Port %d\n", port);
 
     while (1) {
         int client = accept(server_fd, NULL, NULL);
