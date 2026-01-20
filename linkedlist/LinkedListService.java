@@ -19,13 +19,20 @@ import io.prometheus.client.CollectorRegistry;
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.hotspot.DefaultExports;
 
+/**
+ * LinkedList Microservice
+ * Port: 8080 (Matches K8s TargetPort)
+ * Metrics: Enabled via Prometheus DefaultExports
+ */
 public class LinkedListService {
 
     public static void main(String[] args) throws IOException {
-        // 1. Initialize Default Metrics (CPU, Memory, Garbage Collection)
+        // 1. Initialize Default Metrics (CPU, Memory, GC)
+        // NOTE: This increases RAM usage; ensure K8s limit is at least 512Mi
         DefaultExports.initialize();
 
         // Create HTTP Server on Port 8080
+        // Ensure your service.yaml targetPort is 8080
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
 
         // --- Define Routes ---
@@ -35,7 +42,7 @@ public class LinkedListService {
         server.createContext("/remove-head", new RemoveHeadHandler());
         server.createContext("/health", new HealthHandler());
 
-        // 2. Add Metrics Endpoint
+        // 2. Add Metrics Endpoint for Prometheus scraping
         server.createContext("/metrics", new MetricsHandler());
 
         server.setExecutor(null);
@@ -47,19 +54,15 @@ public class LinkedListService {
     static class MetricsHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            // Tell Grafana this is text format 004
             t.getResponseHeaders().set("Content-Type", TextFormat.CONTENT_TYPE_004);
             t.sendResponseHeaders(200, 0);
-
-            // Write the metrics from the registry to the response
             try (OutputStreamWriter writer = new OutputStreamWriter(t.getResponseBody())) {
                 TextFormat.write004(writer, CollectorRegistry.defaultRegistry.metricFamilySamples());
             }
         }
     }
 
-    // --- EXISTING HANDLERS BELOW (Keep them exactly as they were) ---
-
+    // --- API HANDLERS ---
     static class ListHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
@@ -87,6 +90,7 @@ public class LinkedListService {
             if ("POST".equals(t.getRequestMethod())) {
                 InputStream is = t.getRequestBody();
                 String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                // Simple JSON parsing
                 String value = body.replace("{\"value\":\"", "").replace("\"}", "").replace("\"", "").trim();
                 try (Connection conn = DBHelper.getConnection();
                      PreparedStatement pstmt = conn.prepareStatement("INSERT INTO linked_list (value) VALUES (?)")) {
@@ -111,11 +115,7 @@ public class LinkedListService {
                      Statement stmt = conn.createStatement()) {
                     String sql = "DELETE FROM linked_list WHERE id = (SELECT id FROM linked_list ORDER BY id DESC LIMIT 1)";
                     int rowsAffected = stmt.executeUpdate(sql);
-                    if (rowsAffected > 0) {
-                        sendResponse(t, 200, "{\"status\": \"removed tail\"}");
-                    } else {
-                        sendResponse(t, 200, "{\"status\": \"list empty\"}");
-                    }
+                    sendResponse(t, 200, rowsAffected > 0 ? "{\"status\": \"removed tail\"}" : "{\"status\": \"list empty\"}");
                 } catch (Exception e) {
                     e.printStackTrace();
                     sendResponse(t, 500, "{\"error\": \"DB Error\"}");
@@ -134,11 +134,7 @@ public class LinkedListService {
                      Statement stmt = conn.createStatement()) {
                     String sql = "DELETE FROM linked_list WHERE id = (SELECT id FROM linked_list ORDER BY id ASC LIMIT 1)";
                     int rowsAffected = stmt.executeUpdate(sql);
-                    if (rowsAffected > 0) {
-                        sendResponse(t, 200, "{\"status\": \"removed head\"}");
-                    } else {
-                        sendResponse(t, 200, "{\"status\": \"list empty\"}");
-                    }
+                    sendResponse(t, 200, rowsAffected > 0 ? "{\"status\": \"removed head\"}" : "{\"status\": \"list empty\"}");
                 } catch (Exception e) {
                     e.printStackTrace();
                     sendResponse(t, 500, "{\"error\": \"DB Error\"}");
@@ -152,15 +148,16 @@ public class LinkedListService {
     static class HealthHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            sendResponse(t, 200, "OK");
+            sendResponse(t, 200, "{\"status\": \"UP\"}");
         }
     }
 
     private static void sendResponse(HttpExchange t, int statusCode, String response) throws IOException {
         t.getResponseHeaders().set("Content-Type", "application/json");
-        t.sendResponseHeaders(statusCode, response.length());
-        OutputStream os = t.getResponseBody();
-        os.write(response.getBytes());
-        os.close();
+        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+        t.sendResponseHeaders(statusCode, bytes.length);
+        try (OutputStream os = t.getResponseBody()) {
+            os.write(bytes);
+        }
     }
 }
