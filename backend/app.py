@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 app = Flask(__name__)
 CORS(app)
-# test github & jenkins
+
 # ----------------------------
 # Configuration
 # ----------------------------
