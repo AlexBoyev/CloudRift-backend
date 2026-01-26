@@ -33,6 +33,16 @@ def version():
         "build_time_utc": BUILD_TIME_UTC
     }), 200
 
+DEVOPS_SHA = os.getenv("DEVOPS_SHA", "unknown")
+DEVOPS_APPLY_TIME_UTC = os.getenv("DEVOPS_APPLY_TIME_UTC", "unknown")
+
+@app.get("/devops")
+def devops():
+    return jsonify({
+        "devops_sha": DEVOPS_SHA,
+        "applied_at_utc": DEVOPS_APPLY_TIME_UTC
+    }), 200
+
 STACK_URL = _must_env("STACK_URL")            # e.g. http://stack-service:80
 LINKEDLIST_URL = _must_env("LINKEDLIST_URL")  # e.g. http://linkedlist-service:8080
 GRAPH_URL = _must_env("GRAPH_URL")            # e.g. http://graph-service:5000
