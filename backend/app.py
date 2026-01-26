@@ -21,6 +21,17 @@ def _must_env(name: str) -> str:
         sys.exit(1)
     return v.rstrip("/")
 
+BUILD_SHA = os.getenv("BUILD_SHA", "dev")
+BUILD_TIME_UTC = os.getenv("BUILD_TIME_UTC", "unknown")
+SERVICE_NAME = os.getenv("SERVICE_NAME", "backend")
+
+@app.get("/version")
+def version():
+    return jsonify({
+        "service": SERVICE_NAME,
+        "build_sha": BUILD_SHA,
+        "build_time_utc": BUILD_TIME_UTC
+    }), 200
 
 STACK_URL = _must_env("STACK_URL")            # e.g. http://stack-service:80
 LINKEDLIST_URL = _must_env("LINKEDLIST_URL")  # e.g. http://linkedlist-service:8080
