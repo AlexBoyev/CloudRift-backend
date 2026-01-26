@@ -36,6 +36,17 @@ def version():
 DEVOPS_SHA = os.getenv("DEVOPS_SHA", "unknown")
 DEVOPS_APPLY_TIME_UTC = os.getenv("DEVOPS_APPLY_TIME_UTC", "unknown")
 
+FRONTENDSHA = os.getenv("FRONTENDSHA", "unknown")  # [file:1]
+FRONTENDBUILDTIMEUTC = os.getenv("FRONTENDBUILDTIMEUTC", "unknown")  # [file:1]
+
+@app.get("/frontend-version")
+def frontend_version():
+    return jsonify(
+        service="frontend",
+        buildsha=FRONTENDSHA,
+        buildtimeutc=FRONTENDBUILDTIMEUTC,
+    ), 200
+
 @app.get("/devops")
 def devops():
     return jsonify({
